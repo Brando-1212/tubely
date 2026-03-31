@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -41,9 +43,28 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	file_image, err := io.ReadAll(file)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to read file", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", err)
+		return
+	}
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Invalid file type", nil)
+		return
+	}
+
+	assetPath := getAssetPath(videoID, mediaType)
+	assertDiskPath := cfg.getAssetDiskPath(assetPath)
+
+	dst, err := os.Create(assertDiskPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Unable to make file on server", err)
+		return
+	}
+	defer dst.Close()
+
+	if _, err = io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
 		return
 	}
 
@@ -53,14 +74,14 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	videoThumbnails[videoID] = thumbnail{
-		data:      file_image,
-		mediaType: header.Header.Get("Content-Type"),
+	if video_file.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "Not authorized to update this video", nil)
+		return
 	}
 
-	url := fmt.Sprintf("http://localhost:%v/api/thumbnails/%v", cfg.port, videoID)
-
+	url := cfg.getAssetURL(assetPath)
 	video_file.ThumbnailURL = &url
+
 	err = cfg.db.UpdateVideo(video_file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
